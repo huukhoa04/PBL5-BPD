@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/static/home.css">
+    <title>Nhận diện tư thế</title>
+    <style>
+        
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <span>Kiểm tra tư thế ngồi</span>
+        <form action="{% url 'logout' %}" method="post">
+            {% csrf_token %}
+            <button type="submit">Đăng xuất</button>
+        </form>
+    </div>
+
+    <div class="container">
+        <button id="start-button">Bắt đầu</button>
+        <button id="stop-button" hidden>stop</button>
+        <div id="video-container">
+            <h2>Camera Nhận Diện</h2>
+            <img id="video-feed" src="{% url 'video_feed' %}" width="640" height="480">
+        </div>
+    </div>
+
+    <script>
+        document.getElementById("start-button").addEventListener("click", function() {
+            document.getElementById("video-container").style.display = "block";
+            document.getElementById("stop-button").style.display="block";
+            this.style.display = "none";  
+        });
+        document.getElementById("stop-button").addEventListener("click", function(){
+            document.getElementById("video-container").style.display="none";
+            document.getElementById("start-button").style.display="block";
+            this.style.display="none";
+        });
+    </script>
+
+</body>
+</html>
