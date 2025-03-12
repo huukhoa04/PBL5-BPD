@@ -2,7 +2,15 @@ import customtkinter as ctk
 import cv2
 from PIL import Image, ImageTk
 from components.button import ButtonFactory
+from utils.model_loader import load_model_and_encoder
 from _config.theme import Theme
+import mediapipe as mp
+import numpy as np  # Import numpy
+import os  # Import os
+
+mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
+pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
 
 class RemoteCamera(ctk.CTkFrame):
     def __init__(self, parent, controller=None, **kwargs):
@@ -25,7 +33,14 @@ class RemoteCamera(ctk.CTkFrame):
 
         # Biến camera
         self.cap = None
-        self.update_video()
+        model_path = os.path.join(os.path.dirname(__file__), 'models\/best_model.resolved.h5')
+        encoder_path = os.path.join(os.path.dirname(__file__), 'models\label_encoder.resolved.pkl')
+
+        self.model, self.label_encoder = load_model_and_encoder(model_path, encoder_path)
+
+        # Initialize Mediapipe
+        self.mp_pose = mp.solutions.pose
+        self.pose = self.mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
 
     def create_title_section(self):
         """Tạo phần tiêu đề riêng biệt trên cùng"""
@@ -139,17 +154,42 @@ class RemoteCamera(ctk.CTkFrame):
         self.back_button.grid(row=1, column=0, columnspan=2, pady=(20, 20))  
 
     def update_video(self):
-        """Cập nhật luồng video từ camera"""
+        """Cập nhật luồng video và vẽ đường keypoints"""
         if self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame = cv2.resize(frame, (468, 293))
-                img = ImageTk.PhotoImage(Image.fromarray(frame))
-                self.camera_label.configure(image=img)
-                self.camera_label.image = img
-        self.after(30, self.update_video)
+                # Chuyển đổi màu OpenCV từ BGR -> RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_rgb.flags.writeable = False
 
+                # Xử lý bằng MediaPipe
+                results = pose.process(frame_rgb)
+                frame_rgb.flags.writeable = True
+
+                # Nếu phát hiện tư thế, vẽ lên ảnh
+                if results.pose_landmarks:
+                    mp_drawing.draw_landmarks(
+                        frame_rgb, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+                        mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+                        mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2)
+                    )
+
+                    # Dự đoán tư thế và hiển thị nhãn
+                    keypoints = self.extract_keypoints(frame_rgb)
+                    if keypoints is not None:
+                        keypoints = np.expand_dims(keypoints, axis=0)
+                        keypoints = keypoints.reshape((1, 33, 3, 1))
+                        prediction = self.model.predict(keypoints, verbose=0)
+                        posture_label = self.get_multiple_predictions(prediction, threshold=0.5)
+                        self.display_postures(frame_rgb, posture_label)
+
+                # Chuyển đổi sang ảnh Tkinter
+                frame_rgb = cv2.resize(frame_rgb, (448, 293))  
+                img = ImageTk.PhotoImage(Image.fromarray(frame_rgb))
+                self.camera_label.configure(image=img, text="")  
+                self.camera_label.image = img
+
+        self.after(30, self.update_video)
     def connect_camera(self):
         """Kết nối đến camera theo địa chỉ"""
         address = self.address_entry.get()
@@ -160,7 +200,8 @@ class RemoteCamera(ctk.CTkFrame):
         self.cap = cv2.VideoCapture(address)
         if not self.cap.isOpened():
             print("Failed to connect to camera.")
-
+        else:
+            print("Connected to camera.")
     def check_status(self):
         """Kiểm tra trạng thái kết nối camera"""
         if self.cap and self.cap.isOpened():
@@ -169,10 +210,98 @@ class RemoteCamera(ctk.CTkFrame):
             print("No active camera connection.")
 
     def start_monitoring(self):
-        """Bắt đầu theo dõi tư thế"""
-        print("Monitoring started...")
+        """Bắt đầu nhận diện camera"""
+        print("Starting camera...")
+        if self.cap is None or not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(0)  # Mở camera mặc định
+            if not self.cap.isOpened():
+                print("Camera không thể mở!")
+                return
+        self.update_video()
 
+    def stop_camera(self):
+        """Dừng camera"""
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+            self.cap = None
+            self.camera_label.configure(text="No Camera Feed", image="")  # Hiển thị lại chữ mặc định
     def go_back(self):
         """Quay lại màn hình trước"""
+        self.stop_camera()
         if self.controller:
             self.controller.show_frame("monitor")
+    def extract_keypoints(self, image):
+        results = self.pose.process(image)
+        if results.pose_landmarks:
+            keypoints = np.array([[lm.x, lm.y, lm.z] for lm in results.pose_landmarks.landmark]).flatten()
+            return keypoints
+        else:
+            return None
+
+    def extract_head_keypoints(self, image):
+        """Extract head keypoints (nose, eyes, ears)"""
+        results = self.pose.process(image)
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            head_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # MediaPipe indices for head landmarks
+            head_points = np.array([[landmarks[i].x, landmarks[i].y, landmarks.i.z] for i in head_indices]).flatten()
+            return head_points
+        return None
+
+    def extract_body_keypoints(self, image):
+        """Extract torso keypoints (shoulders, chest, hips)"""
+        results = self.pose.process(image)
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            body_indices = [11, 12, 23, 24]  # MediaPipe indices for body landmarks
+            body_points = np.array([[landmarks[i].x, landmarks.i.y, landmarks.i.z] for i in body_indices]).flatten()
+            return body_points
+        return None
+
+    def extract_arm_keypoints(self, image):
+        """Extract arm keypoints (shoulders to wrists)"""
+        results = self.pose.process(image)
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            arm_indices = [11, 13, 15, 12, 14, 16]  # MediaPipe indices for arm landmarks
+            arm_points = np.array([[landmarks[i].x, landmarks.i.y, landmarks.i.z] for i in arm_indices]).flatten()
+            return arm_points
+        return None
+
+    def extract_leg_keypoints(self, image):
+        """Extract leg keypoints (hips to ankles)"""
+        results = self.pose.process(image)
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            leg_indices = [23, 25, 27, 24, 26, 28]  # MediaPipe indices for leg landmarks
+            leg_points = np.array([[landmarks[i].x, landmarks.i.y, landmarks.i.z] for i in leg_indices]).flatten()
+            return leg_points
+        return None
+
+    def extract_foot_keypoints(self, image):
+        """Extract foot keypoints (feet landmarks)"""
+        results = self.pose.process(image)
+        if results.pose_landmarks:
+            landmarks = results.pose_landmarks.landmark
+            foot_indices = [29, 30, 31, 32]  # MediaPipe indices for foot landmarks
+            foot_points = np.array([[landmarks[i].x, landmarks.i.y, landmarks.i.z] for i in foot_indices]).flatten()
+            return foot_points
+        return None
+
+    def get_pose_results(self, image):
+        """
+        Get raw MediaPipe pose results for visualization.
+        """
+        results = self.pose.process(image)
+        return results
+
+    def get_multiple_predictions(self, prediction, threshold=0.5):
+        # Implement logic to get multiple predictions above threshold
+        # Example: return ["Good Posture"] if prediction[0][0] > threshold else ["Bad Posture"]
+        predicted_label = self.label_encoder.inverse_transform([np.argmax(prediction)])
+        return predicted_label
+
+    def display_postures(self, frame, postures):
+        # Implement logic to display postures on frame
+        # Example: cv2.putText(frame, postures[0], (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(frame, postures[0], (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)

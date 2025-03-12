@@ -1,7 +1,6 @@
 import customtkinter as ctk
 from components.camera_option import CameraOptionButton
 from _config.theme import Theme
-from utils.model_loader import load_model_and_encoder
 
 class Choosing(ctk.CTkFrame):
     def __init__(self, parent, controller=None, **kwargs):
